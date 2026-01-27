@@ -1,0 +1,69 @@
+---
+- name: Aplicar Windows Update via PowerShell
+  hosts: windows
+  gather_facts: no
+  serial: 1
+
+  tasks:
+
+    - name: Criar diretório temporário
+      ansible.windows.win_file:
+        path: C:\Temp
+        state: directory
+
+    # - name: Validar script no controller
+    #   ansible.builtin.stat:
+    #     path: "{{ playbook_dir }}/scripts/windows_update.ps1"
+    #   register: script_stat
+
+    # - name: Falhar se script não existir
+    #   fail:
+    #     msg: "Script PowerShell não encontrado no controller"
+    #   when: not script_stat.stat.exists
+
+    - name: Copiar arquivo para o Windows
+      ansible.windows.win_copy:
+        src: scripts/windows_update.ps1.txt
+        dest: C:\Temp\windows_update.ps1.txt
+   
+    # - name: Renomear no Windows
+    #   ansible.windows.win_shell: |
+    #     Rename-Item C:\Temp\windows_update.ps1.txt windows_update.ps1
+
+
+    # - name: Copiar script PowerShell para o Windows
+    #   ansible.windows.win_copy:
+    #     src: "{{ playbook_dir }}/scripts/windows_update.ps1"
+    #     dest: C:\Temp\windows_update.ps1
+
+    # ===============================
+    # EXECUÇÃO DO SCRIPT
+    # ===============================
+    - name: Executar script PowerShell de Windows Update
+      ansible.windows.win_shell: |
+        powershell.exe -ExecutionPolicy Bypass -File C:\Temp\windows_update.ps1
+      register: update_result
+      changed_when: true
+
+    - name: Mostrar saída do script
+      debug:
+        var: update_result.stdout_lines
+
+    - name: Reboot se necessário
+      ansible.windows.win_reboot:
+        reboot_timeout: 3600
+        post_reboot_delay: 60
+      when:
+        - update_result.stdout_lines is defined
+        - "'REBOOT_REQUIRED' in update_result.stdout_lines"
+
+    - name: Aguardar WinRM após reboot
+      ansible.builtin.wait_for_connection:
+        timeout: 900
+      when:
+        - update_result.stdout_lines is defined
+        - "'REBOOT_REQUIRED' in update_result.stdout_lines"
+
+    - name: Confirmação final
+      debug:
+        msg: "Script PowerShell executado com sucesso ✅"

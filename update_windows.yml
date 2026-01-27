@@ -1,0 +1,17 @@
+---
+- name: Aplicar Windows Update via PowerShell
+  hosts: windows
+  gather_facts: no
+  serial: 1
+
+  tasks:
+
+    - name: Criar diretório temporário
+      ansible.windows.win_file:
+        path: C:\Temp
+        state: directory
+
+    - name: Instalar TODAS as atualizações
+      ansible.windows.win_updates:
+        state: installed
+        reboot: yes

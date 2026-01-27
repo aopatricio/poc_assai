@@ -1,0 +1,100 @@
+---
+- name: Patching Windows Server 2016/2022 com cutoff (KB allowlist) + start serviço crítico
+  hosts: srvwin2019
+  gather_facts: false
+  serial: "{{ patch_serial | default(1) }}"
+
+  vars:
+    evidence_dir: >-
+      {{ evidence_dir_base | default('C:\\Temp\\aap-evidence') }}\\patch-windows\\
+      {{ lookup('pipe','powershell -NoProfile -Command "Get-Date -Format yyyyMMddTHHmmss"') }}
+
+  pre_tasks:
+    - name: Validar variáveis de cutoff Windows (somente KB allowlist)
+      ansible.builtin.assert:
+        that:
+          - windows_accept_list_kbs is defined
+          - windows_accept_list_kbs | length > 0
+        fail_msg: >
+          Informe windows_accept_list_kbs (lista de KBs permitidas) para aplicar updates somente via KB allowlist.
+
+    - name: Criar diretório de evidências
+      ansible.windows.win_file:
+        path: "{{ evidence_dir }}"
+        state: directory
+
+    - name: Exportar lista de hotfixes (ANTES)
+      ansible.windows.win_shell: |
+        Get-HotFix | Sort-Object InstalledOn | Select-Object HotFixID, InstalledOn, Description |
+        ConvertTo-Json -Depth 3
+      register: hotfix_before
+      changed_when: false
+
+    - name: Salvar evidência (ANTES)
+      ansible.windows.win_copy:
+        dest: "{{ evidence_dir }}\\hotfix_before.json"
+        content: "{{ hotfix_before.stdout }}"
+
+  tasks:
+    - name: Aplicar updates via Windows Update usando KB allowlist (cutoff por KB)
+      ansible.windows.win_updates:
+        category_names: "{{ windows_update_categories | default(['CriticalUpdates','SecurityUpdates','UpdateRollups']) }}"
+        state: installed
+        reboot: true
+        reboot_timeout: "{{ windows_reboot_timeout | default(3600) }}"
+        accept_list: "{{ windows_accept_list_kbs }}"
+        reject_list: "{{ windows_reject_list_kbs | default(omit) }}"
+      register: wu_result
+
+    - name: Configurar credencial do serviço crítico (opcional)
+      ansible.windows.win_service:
+        name: "{{ critical_service_name }}"
+        username: "{{ critical_service_user }}"
+        password: "{{ critical_service_password }}"
+        start_mode: auto
+      when: critical_service_configure_account | default(false) | bool
+
+    - name: Start do serviço/aplicação crítica (obrigatório)
+      ansible.windows.win_service:
+        name: "{{ critical_service_name }}"
+        state: started
+
+    - name: Validar status do serviço crítico
+      ansible.windows.win_service_info:
+        name: "{{ critical_service_name }}"
+      register: svc_info
+
+    - name: Falhar se serviço crítico não estiver Running
+      ansible.builtin.assert:
+        that:
+          - svc_info.services | length > 0
+          - svc_info.services[0].state | lower == "running"
+        fail_msg: "Serviço crítico {{ critical_service_name }} não está em execução após patching."
+
+  post_tasks:
+    - name: Exportar lista de hotfixes (DEPOIS)
+      ansible.windows.win_shell: |
+        Get-HotFix | Sort-Object InstalledOn | Select-Object HotFixID, InstalledOn, Description |
+        ConvertTo-Json -Depth 3
+      register: hotfix_after
+      changed_when: false
+
+    - name: Salvar evidência (DEPOIS)
+      ansible.windows.win_copy:
+        dest: "{{ evidence_dir }}\\hotfix_after.json"
+        content: "{{ hotfix_after.stdout }}"
+
+    - name: Salvar resumo JSON
+      ansible.windows.win_copy:
+        dest: "{{ evidence_dir }}\\summary.json"
+        content: |
+          {
+            "host": "{{ inventory_hostname }}",
+            "accept_list_kbs": {{ (windows_accept_list_kbs | default([])) | to_json }},
+            "reject_list_kbs": {{ (windows_reject_list_kbs | default([])) | to_json }},
+            "installed_updates": {{ (wu_result.updates | default({})) | to_json }},
+            "rebooted": {{ (wu_result.reboot_required | default(false)) | lower }},
+            "critical_service": "{{ critical_service_name }}",
+            "critical_service_state": "{{ svc_info.services[0].state if (svc_info.services|length>0) else 'unknown' }}",
+            "timestamp": "{{ '%Y-%m-%dT%H:%M:%S' | strftime }}"
+          }

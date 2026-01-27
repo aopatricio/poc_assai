@@ -1,0 +1,38 @@
+---
+- name: Atualização de Windows Server 2019 via WMI
+  hosts: windows
+  gather_facts: no
+
+  vars:
+    categorias_updates:
+      - SecurityUpdates
+      - CriticalUpdates
+      - UpdateRollups
+
+  tasks:
+
+    - name: Buscar atualizações disponíveis (WMI)
+      ansible.windows.win_updates:
+        state: searched
+        category_names: "{{ categorias_updates }}"
+      register: updates_disponiveis
+
+    - name: Exibir atualizações encontradas
+      debug:
+        msg: >
+          Atualizações encontradas:
+          {{ updates_disponiveis.updates | map(attribute='title') | list }}
+      when: updates_disponiveis.found_update_count | int > 0
+
+    - name: Instalar atualizações encontradas
+      ansible.windows.win_updates:
+        state: installed
+        #category_names: "{{ categorias_updates }}"
+        reboot: yes
+        reboot_timeout: 3600
+      when: updates_disponiveis.found_update_count | int > 0
+      register: resultado_instalacao
+
+    - name: Resultado da instalação
+      debug:
+        var: resultado_instalacao
