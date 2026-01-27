@@ -8,7 +8,7 @@
 
     - name: Criar diretório temporário
       ansible.windows.win_file:
-        path: C:\Temp
+        path: C:\Tempv2
         state: directory
 
     # - name: Validar script no controller
@@ -24,7 +24,7 @@
     - name: Copiar arquivo para o Windows
       ansible.windows.win_copy:
         src: scripts/windows_update.ps1.txt
-        dest: C:\Temp\windows_update.ps1.txt
+        dest: C:\Tempv2\windows_update.ps1.txt
    
     # - name: Renomear no Windows
     #   ansible.windows.win_shell: |
