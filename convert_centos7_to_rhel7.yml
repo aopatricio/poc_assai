@@ -1,0 +1,85 @@
+- name: Converter CentOS 7 para RHEL 7
+  hosts: centos7
+  become: yes
+  gather_facts: yes
+
+  vars:
+    rhsm_user: "{{ var_rhsm_user }}"
+    rhsm_pass: "{{ var_rhsm_pass }}"
+    rhsm_pool: "{{ var_rhsm_poolid }}"
+    convert_log: /var/log/convert2rhel.log
+
+  tasks:
+
+    - name: Validar sistema operacional
+      fail:
+        msg: "Este playbook só pode ser executado em CentOS 7"
+      when:
+        - ansible_distribution != "CentOS"
+        - ansible_distribution_major_version != "7"
+
+    - name: Validar espaço em disco mínimo (10GB)
+      assert:
+        that:
+          - ansible_facts['mounts'] | selectattr('mount','equalto','/') | map(attribute='size_available') | first > 10737418240
+        fail_msg: "Espaço insuficiente em / (mínimo 10GB)"
+
+    - name: Garantir pacotes base
+      yum:
+        name:
+          - curl
+          - wget
+          - yum-utils
+        state: present
+
+    - name: Habilitar repositório extras
+      command: yum-config-manager --enable extras
+      changed_when: false
+
+    - name: Adicionar repositório convert2rhel
+      get_url:
+        url: https://cdn-public.redhat.com/content/public/repofiles/convert2rhel-for-rhel-7-x86_64.repo
+        dest: /etc/yum.repos.d/convert2rhel.repo
+        mode: '0644'
+
+    - name: Instalar convert2rhel
+      yum:
+        name: convert2rhel
+        state: present
+
+    - name: Executar convert2rhel (pode demorar)
+      command: >
+        convert2rhel
+        --username {{ rhsm_user }}
+        --password {{ rhsm_pass }}
+        --pool {{ rhsm_pool }}
+        -y
+      async: 7200
+      poll: 60
+      register: convert_result
+      ignore_errors: true
+
+    - name: Exibir saída do convert2rhel
+      debug:
+        var: convert_result.stdout_lines
+
+    - name: Validar se conversão foi bem-sucedida
+      fail:
+        msg: "Falha na conversão. Verifique {{ convert_log }}"
+      when:
+        - convert_result.rc is defined
+        - convert_result.rc != 0
+
+    - name: Reboot após conversão
+      reboot:
+        msg: "Reinício necessário após convert2rhel"
+        reboot_timeout: 1800
+        test_command: whoami
+
+    - name: Validar sistema após reboot
+      command: cat /etc/redhat-release
+      register: os_release
+
+    - name: Mostrar versão final do SO
+      debug:
+        msg: "{{ os_release.stdout }}"
