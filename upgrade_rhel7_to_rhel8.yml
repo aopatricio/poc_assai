@@ -12,7 +12,8 @@
     leapp_answerfile: /var/log/leapp/answerfile
 
   pre_tasks:
-    - name: Validar se o SO é RHEL 7
+
+    - name: Validar se o sistema é RHEL 7
       fail:
         msg: "Este playbook só pode ser executado em RHEL 7"
       when:
@@ -30,12 +31,22 @@
 
   tasks:
 
-    - name: Registrar o sistema usando usuário e senha RHSM
-      redhat_subscription:
-        state: present
-        username: "{{ rhsm_user }}"
-        password: "{{ rhsm_password }}"
-        auto_attach: true
+    - name: Verificar se o sistema já está registrado no RHSM
+      stat:
+        path: /etc/pki/consumer/cert.pem
+      register: rhsm_cert
+
+    - name: Registrar sistema no RHSM via CLI (user/password)
+      command: >
+        subscription-manager register
+        --username {{ rhsm_user }}
+        --password {{ rhsm_password }}
+        --auto-attach
+      when: not rhsm_cert.stat.exists
+
+    - name: Garantir que o sistema está anexado a uma subscription
+      command: subscription-manager attach --auto
+      when: not rhsm_cert.stat.exists
 
     - name: Habilitar repositórios necessários do RHEL 7
       command: >
@@ -51,12 +62,12 @@
           - leapp-repository
         state: present
 
-    - name: Criar answerfile do Leapp (evita prompts interativos)
+    - name: Criar answerfile do Leapp (modo não interativo)
       shell: leapp answer --section remove_pam_pkcs11_module_check.confirm=True
       args:
         creates: "{{ leapp_answerfile }}"
 
-    - name: Executar validação pre-upgrade
+    - name: Executar preupgrade do Leapp
       command: leapp preupgrade
       register: preupgrade_output
       failed_when: false
@@ -65,7 +76,7 @@
       debug:
         var: preupgrade_output.stdout_lines
 
-    - name: Verificar se existem Inhibitors (bloqueios)
+    - name: Verificar existência de Inhibitors (bloqueios)
       shell: |
         grep -i "inhibitor" /var/log/leapp/leapp-report.txt
       register: inhibitor_check
