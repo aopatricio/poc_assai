@@ -1,7 +1,7 @@
 ---
-- name: Migração in-place RHEL 7.9 para RHEL 8 com Leapp
-  hosts: centos7
-  become: yes
+- name: Upgrade RHEL 7 para RHEL 8 com Leapp (RHSM user/password)
+  hosts: rhel7
+  become: true
   gather_facts: yes
 
   vars:
@@ -9,157 +9,87 @@
     rhsm_user: "{{ var_rhsm_user }}"
     rhsm_pass: "{{ var_rhsm_pass }}"
     rhsm_pool: "{{ var_rhsm_poolid }}"
+    leapp_answerfile: /var/log/leapp/answerfile
 
-    leapp_packages:
-      - leapp
-      - leapp-repository
-      - leapp-upgrade-el7toel8
+  pre_tasks:
+    - name: Validar se o SO é RHEL 7
+      fail:
+        msg: "Este playbook só pode ser executado em RHEL 7"
+      when:
+        - ansible_distribution != "RedHat"
+        - ansible_distribution_major_version != "7"
+
+    - name: Atualizar todos os pacotes do RHEL 7
+      yum:
+        name: "*"
+        state: latest
+
+    - name: Reboot após atualização
+      reboot:
+        reboot_timeout: 1800
 
   tasks:
 
-  ####################################################################
-  # PRE-CHECKS
-  ####################################################################
+    - name: Registrar o sistema usando usuário e senha RHSM
+      redhat_subscription:
+        state: present
+        username: "{{ rhsm_user }}"
+        password: "{{ rhsm_password }}"
+        auto_attach: true
 
-  - name: Verificar versão do RHEL
-    command: cat /etc/redhat-release
-    register: rhel_release
+    - name: Habilitar repositórios necessários do RHEL 7
+      command: >
+        subscription-manager repos
+        --enable=rhel-7-server-rpms
+        --enable=rhel-7-server-extras-rpms
+        --enable=rhel-7-server-optional-rpms
 
-  - name: Garantir que é RHEL 7.9
-    fail:
-      msg: "Sistema não está no RHEL 7.9. Migração abortada."
-    when: required_rhel_version not in rhel_release.stdout
+    - name: Garantir que o Leapp e dependências estão instalados
+      yum:
+        name:
+          - leapp
+          - leapp-repository
+        state: present
 
-  ####################################################################
-  # SUBSCRIPTION-MANAGER (USER / PASSWORD)
-  ####################################################################
+    - name: Criar answerfile do Leapp (evita prompts interativos)
+      shell: leapp answer --section remove_pam_pkcs11_module_check.confirm=True
+      args:
+        creates: "{{ leapp_answerfile }}"
 
-  - name: Verificar se sistema já está registrado
-    command: subscription-manager identity
-    register: rhsm_identity
-    failed_when: false
-    changed_when: false
+    - name: Executar validação pre-upgrade
+      command: leapp preupgrade
+      register: preupgrade_output
+      failed_when: false
 
-  - name: Registrar sistema no RHSM (user/password)
-    command: >
-      subscription-manager register
-      --username={{ rhsm_username }}
-      --password={{ rhsm_password }}
-      --auto-attach
-    when: rhsm_identity.rc != 0
+    - name: Exibir saída do preupgrade
+      debug:
+        var: preupgrade_output.stdout_lines
 
-  - name: Garantir que o sistema tenha acesso a repositórios
-    command: subscription-manager repos --list-enabled
-    register: enabled_repos
+    - name: Verificar se existem Inhibitors (bloqueios)
+      shell: |
+        grep -i "inhibitor" /var/log/leapp/leapp-report.txt
+      register: inhibitor_check
+      failed_when: inhibitor_check.rc == 0
 
-  - name: Falhar se não houver repositórios habilitados
-    fail:
-      msg: "Sistema registrado, mas sem acesso a repositórios RHSM."
-    when: enabled_repos.stdout | trim == ""
+    - name: Executar upgrade para RHEL 8
+      command: leapp upgrade
+      async: 3600
+      poll: 30
 
-  ####################################################################
-  # CHECKS BÁSICOS
-  ####################################################################
+    - name: Reboot para concluir a migração
+      reboot:
+        reboot_timeout: 3600
 
-  - name: Verificar SELinux
-    command: getenforce
-    register: selinux_status
+  post_tasks:
 
-  - name: Garantir SELinux não está Disabled
-    fail:
-      msg: "SELinux está Disabled. Corrija antes da migração."
-    when: selinux_status.stdout == "Disabled"
+    - name: Validar versão final do sistema
+      command: cat /etc/redhat-release
+      register: rhel_version
 
-  - name: Aviso de snapshot
-    debug:
-      msg: "⚠️ CONFIRME snapshot ou backup antes de continuar"
+    - name: Exibir versão após upgrade
+      debug:
+        msg: "Sistema após upgrade: {{ rhel_version.stdout }}"
 
-  ####################################################################
-  # PREPARAÇÃO DO SISTEMA
-  ####################################################################
-
-  - name: Atualizar sistema RHEL 7
-    yum:
-      name: "*"
-      state: latest
-
-  - name: Reboot após atualização
-    reboot:
-      reboot_timeout: 600
-
-  - name: Habilitar repositório base RHEL 7
-    command: subscription-manager repos --enable=rhel-7-server-rpms
-
-  ####################################################################
-  # INSTALAÇÃO DO LEAPP
-  ####################################################################
-
-  - name: Instalar pacotes do Leapp
-    yum:
-      name: "{{ leapp_packages }}"
-      state: present
-
-  ####################################################################
-  # LEAPP PREUPGRADE
-  ####################################################################
-
-  - name: Executar leapp preupgrade
-    command: leapp preupgrade
-    register: preupgrade
-    failed_when: false
-
-  - name: Ler relatório do Leapp
-    command: cat /var/log/leapp/leapp-report.txt
-    register: leapp_report
-
-  - name: Exibir relatório do Leapp
-    debug:
-      var: leapp_report.stdout_lines
-
-  - name: Falhar se houver erros HIGH
-    fail:
-      msg: "Leapp encontrou erros críticos (HIGH). Corrija antes de continuar."
-    when: "'HIGH' in leapp_report.stdout"
-
-  ####################################################################
-  # LEAPP UPGRADE
-  ####################################################################
-
-  - name: Executar leapp upgrade
-    command: leapp upgrade
-    async: 7200
-    poll: 15
-
-  - name: Reboot para iniciar o upgrade
-    reboot:
-      reboot_timeout: 3600
-
-  ####################################################################
-  # POST-CHECKS
-  ####################################################################
-
-  - name: Verificar versão do RHEL após upgrade
-    command: cat /etc/redhat-release
-    register: new_release
-
-  - name: Mostrar versão final
-    debug:
-      msg: "{{ new_release.stdout }}"
-
-  - name: Garantir que sistema está no RHEL 8
-    fail:
-      msg: "Upgrade falhou. Sistema não está no RHEL 8."
-    when: "'release 8' not in new_release.stdout"
-
-  - name: Garantir SSH ativo
-    systemd:
-      name: sshd
-      state: started
-      enabled: yes
-
-  - name: Limpar pacotes obsoletos
-    command: dnf autoremove -y
-
-  - name: Finalização
-    debug:
-      msg: "✅ Migração RHEL 7 → RHEL 8 concluída com sucesso"
+    - name: Remover pacotes órfãos pós-upgrade
+      dnf:
+        autoremove: yes
