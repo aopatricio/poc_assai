@@ -1,0 +1,74 @@
+---
+- name: Preparar e Realizar Upgrade do RHEL 7 para 8
+  hosts: centos7
+  become: yes
+  vars:
+    # Versão alvo (ex: 8.6, 8.8, 8.10) - O leapp geralmente migra para a 8.x mais recente suportada
+    target_release: "8.10"
+
+  tasks:
+    # 1. Preparação
+    - name: Garantir que o sistema está no RHEL 7.9
+      shell: "cat /etc/redhat-release"
+      register: rhel_version
+      failed_when: "'7.9' not in rhel_version.stdout"
+
+    - name: Atualizar pacotes atuais e reiniciar
+      yum:
+        name: "*"
+        state: latest
+      notify: reiniciar_servidor
+
+    - name: Flush handlers (reiniciar se necessário)
+      meta: flush_handlers
+
+    - name: Habilitar repositórios extras (extras/optional)
+      subscription-manager:
+        state: present
+        repos:
+          - rhel-7-server-extras-rpms
+          - rhel-7-server-optional-rpms
+
+    - name: Instalar ferramentas Leapp
+      yum:
+        name: 
+          - leapp
+          - leapp-upgrade
+        state: present
+
+    # 2. Pré-upgrade (Análise)
+    - name: Executar o Leapp Pre-upgrade
+      command: leapp preupgrade
+      register: preupgrade_result
+      ignore_errors: yes # Frequentemente tem avisos que não travam o processo
+
+    - name: Verificar relatório de pre-upgrade
+      debug:
+        msg: "Verifique o relatório em /var/log/leapp/leapp-report.txt"
+
+    # 3. Upgrade (Execução)
+    # Se houver "Inhibitors" (bloqueadores), o passo abaixo falhará.
+    # É necessário ler /var/log/leapp/leapp-report.txt e resolver manualmente
+    - name: Executar o Leapp Upgrade
+      command: leapp upgrade
+      register: upgrade_result
+
+    - name: Reiniciar para concluir a atualização
+      shell: "sleep 10 && reboot"
+      async: 1
+      poll: 0
+      when: upgrade_result.rc == 0
+
+    - name: Aguardar o servidor retornar (após reboot do upgrade)
+      wait_for_connection:
+        delay: 60
+        timeout: 300
+
+  handlers:
+    - name: reiniciar_servidor
+      reboot:
+        msg: "Reiniciando para aplicar atualizações"
+        connect_timeout: 5
+        reboot_timeout: 600
+        pre_reboot_delay: 0
+        post_reboot_delay: 30
