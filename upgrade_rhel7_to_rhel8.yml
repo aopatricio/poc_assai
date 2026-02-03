@@ -1,11 +1,15 @@
 ---
-- name: Migração in-place RHEL 7 para RHEL 8 com Leapp
+- name: Migração in-place RHEL 7.9 para RHEL 8 com Leapp
   hosts: centos7
   become: yes
   gather_facts: yes
 
   vars:
     required_rhel_version: "7.9"
+    rhsm_user: "{{ var_rhsm_user }}"
+    rhsm_pass: "{{ var_rhsm_pass }}"
+    rhsm_pool: "{{ var_rhsm_poolid }}"
+
     leapp_packages:
       - leapp
       - leapp-repository
@@ -26,35 +30,49 @@
       msg: "Sistema não está no RHEL 7.9. Migração abortada."
     when: required_rhel_version not in rhel_release.stdout
 
-  - name: Verificar se sistema está registrado no subscription-manager
-    command: subscription-manager status
-    register: sub_status
+  ####################################################################
+  # SUBSCRIPTION-MANAGER (USER / PASSWORD)
+  ####################################################################
 
-  - name: Falhar se subscription não estiver válida
+  - name: Verificar se sistema já está registrado
+    command: subscription-manager identity
+    register: rhsm_identity
+    failed_when: false
+    changed_when: false
+
+  - name: Registrar sistema no RHSM (user/password)
+    command: >
+      subscription-manager register
+      --username={{ rhsm_username }}
+      --password={{ rhsm_password }}
+      --auto-attach
+    when: rhsm_identity.rc != 0
+
+  - name: Garantir que o sistema tenha acesso a repositórios
+    command: subscription-manager repos --list-enabled
+    register: enabled_repos
+
+  - name: Falhar se não houver repositórios habilitados
     fail:
-      msg: "Subscription inválida ou não registrada."
-    when: "'Overall Status: Current' not in sub_status.stdout"
+      msg: "Sistema registrado, mas sem acesso a repositórios RHSM."
+    when: enabled_repos.stdout | trim == ""
+
+  ####################################################################
+  # CHECKS BÁSICOS
+  ####################################################################
 
   - name: Verificar SELinux
     command: getenforce
     register: selinux_status
 
-  - name: Garantir SELinux em Enforcing ou Permissive
+  - name: Garantir SELinux não está Disabled
     fail:
-      msg: "SELinux está Disabled. Corrija antes de continuar."
+      msg: "SELinux está Disabled. Corrija antes da migração."
     when: selinux_status.stdout == "Disabled"
-
-  - name: Verificar espaço em disco /
-    command: df -h /
-    register: disk_root
-
-  - name: Exibir espaço em disco
-    debug:
-      var: disk_root.stdout_lines
 
   - name: Aviso de snapshot
     debug:
-      msg: "⚠️ CONFIRME snapshot/backup antes de continuar"
+      msg: "⚠️ CONFIRME snapshot ou backup antes de continuar"
 
   ####################################################################
   # PREPARAÇÃO DO SISTEMA
@@ -69,7 +87,7 @@
     reboot:
       reboot_timeout: 600
 
-  - name: Habilitar repositórios necessários
+  - name: Habilitar repositório base RHEL 7
     command: subscription-manager repos --enable=rhel-7-server-rpms
 
   ####################################################################
@@ -94,7 +112,7 @@
     command: cat /var/log/leapp/leapp-report.txt
     register: leapp_report
 
-  - name: Mostrar relatório do Leapp
+  - name: Exibir relatório do Leapp
     debug:
       var: leapp_report.stdout_lines
 
@@ -124,7 +142,7 @@
     command: cat /etc/redhat-release
     register: new_release
 
-  - name: Mostrar nova versão
+  - name: Mostrar versão final
     debug:
       msg: "{{ new_release.stdout }}"
 
@@ -132,14 +150,6 @@
     fail:
       msg: "Upgrade falhou. Sistema não está no RHEL 8."
     when: "'release 8' not in new_release.stdout"
-
-  - name: Verificar kernel
-    command: uname -r
-    register: kernel_version
-
-  - name: Mostrar kernel
-    debug:
-      msg: "Kernel atual: {{ kernel_version.stdout }}"
 
   - name: Garantir SSH ativo
     systemd:
@@ -149,14 +159,6 @@
 
   - name: Limpar pacotes obsoletos
     command: dnf autoremove -y
-
-  - name: Verificar SELinux após upgrade
-    command: getenforce
-    register: selinux_after
-
-  - name: Mostrar status do SELinux
-    debug:
-      msg: "SELinux após upgrade: {{ selinux_after.stdout }}"
 
   - name: Finalização
     debug:
