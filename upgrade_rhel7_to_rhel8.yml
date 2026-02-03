@@ -1,6 +1,6 @@
 ---
 - name: Upgrade RHEL 7 para RHEL 8 com Leapp (RHSM user/password)
-  hosts: rhel7
+  hosts: centos7
   become: true
   gather_facts: yes
 
