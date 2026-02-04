@@ -8,17 +8,22 @@
     required_rhel_version: "7.9"
     rhsm_user: "{{ var_rhsm_user }}"
     rhsm_pass: "{{ var_rhsm_pass }}"
-    rhsm_pool: "{{ var_rhsm_poolid }}"
     leapp_answerfile: /var/log/leapp/answerfile
+    removed_kernel_drivers:
+      - floppy
+      - pata_acpi
+      - pata_jmicron
+      - mptctl
 
   pre_tasks:
 
-    - name: Validar se o sistema é RHEL 7
+    - name: Validar se o sistema é RHEL 7.9
       fail:
-        msg: "Este playbook só pode ser executado em RHEL 7"
+        msg: "Este playbook só pode ser executado em RHEL 7.9"
       when:
         - ansible_distribution != "RedHat"
         - ansible_distribution_major_version != "7"
+        - ansible_distribution_version != required_rhel_version
 
     - name: Atualizar todos os pacotes do RHEL 7
       yum:
@@ -36,15 +41,15 @@
         path: /etc/pki/consumer/cert.pem
       register: rhsm_cert
 
-    - name: Registrar sistema no RHSM via CLI (user/password)
+    - name: Registrar sistema no RHSM
       command: >
         subscription-manager register
         --username {{ rhsm_user }}
-        --password {{ rhsm_password }}
+        --password {{ rhsm_pass }}
         --auto-attach
       when: not rhsm_cert.stat.exists
 
-    - name: Garantir que o sistema está anexado a uma subscription
+    - name: Garantir subscription ativa
       command: subscription-manager attach --auto
       when: not rhsm_cert.stat.exists
 
@@ -55,39 +60,70 @@
         --enable=rhel-7-server-extras-rpms
         --enable=rhel-7-server-optional-rpms
 
-    - name: Garantir que o Leapp e dependências estão instalados
+    - name: Instalar Leapp e dependências
       yum:
         name:
           - leapp
           - leapp-repository
         state: present
 
-    - name: Criar answerfile do Leapp (modo não interativo)
-      shell: leapp answer --section remove_pam_pkcs11_module_check.confirm=True
-      args:
-        creates: "{{ leapp_answerfile }}"
+    # -------------------------------
+    # CORREÇÃO DO INHIBITOR DE DRIVERS
+    # -------------------------------
+    - name: Blacklist de drivers removidos no RHEL 8
+      copy:
+        dest: /etc/modprobe.d/leapp-blacklist.conf
+        content: |
+          {% for driver in removed_kernel_drivers %}
+          blacklist {{ driver }}
+          {% endfor %}
 
-    - name: Executar preupgrade do Leapp
+    - name: Rebuild initramfs após blacklist
+      command: dracut -f
+
+    - name: Reboot após blacklist de drivers
+      reboot:
+        reboot_timeout: 1800
+
+    # -------------------------------
+    # ANSWERFILE (INHIBITOR PAM)
+    # -------------------------------
+    - name: Criar answerfile do Leapp
+      copy:
+        dest: "{{ leapp_answerfile }}"
+        content: |
+          [remove_pam_pkcs11_module_check]
+          confirm = True
+        owner: root
+        group: root
+        mode: '0600'
+
+    # -------------------------------
+    # PREUPGRADE
+    # -------------------------------
+    - name: Executar leapp preupgrade
       command: leapp preupgrade
-      register: preupgrade_output
+      register: preupgrade_result
       failed_when: false
 
-    - name: Exibir saída do preupgrade
+    - name: Exibir relatório do preupgrade
       debug:
-        var: preupgrade_output.stdout_lines
+        var: preupgrade_result.stdout_lines
 
-    - name: Verificar existência de Inhibitors (bloqueios)
-      shell: |
-        grep -i "inhibitor" /var/log/leapp/leapp-report.txt
+    - name: Verificar existência de Inhibitors
+      shell: grep -i "inhibitor" /var/log/leapp/leapp-report.txt
       register: inhibitor_check
       failed_when: inhibitor_check.rc == 0
 
+    # -------------------------------
+    # UPGRADE
+    # -------------------------------
     - name: Executar upgrade para RHEL 8
       command: leapp upgrade
-      async: 3600
+      async: 7200
       poll: 30
 
-    - name: Reboot para concluir a migração
+    - name: Reboot para concluir o upgrade
       reboot:
         reboot_timeout: 3600
 
