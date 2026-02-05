@@ -1,10 +1,14 @@
 ---
-- name: Conversão de CentOS 7 para Oracle Linux 7
+- name: Conversao de CentOS 7 para Oracle Linux 7 com alteracao de hostname
   hosts: centos7
   become: true
   gather_facts: yes
 
   vars:
+    # Hostname desejado (pode sobrescrever no inventory ou extra-vars)
+    new_hostname: "ol7-{{ var_new_hostname }}"
+
+    # Script oficial Oracle
     centos2ol_url: https://raw.githubusercontent.com/oracle/centos2ol/main/centos2ol.sh
     centos2ol_path: /root/centos2ol.sh
 
@@ -18,11 +22,16 @@
         fail_msg: "Este playbook só pode ser executado em CentOS 7"
         success_msg: "Sistema validado: CentOS 7"
 
-    - name: Garantir que não está rodando em container
-      assert:
-        that:
-          - ansible_virtualization_role != "guest" or ansible_virtualization_type != "docker"
-        fail_msg: "Conversão não suportada em containers"
+    - name: Alterar hostname do servidor
+      hostname:
+        name: "{{ new_hostname }}"
+
+    - name: Atualizar /etc/hosts com o novo hostname
+      lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.0\.1'
+        line: "127.0.0.1   {{ new_hostname }} localhost"
+        state: present
 
   tasks:
 
@@ -31,7 +40,7 @@
         name: "*"
         state: latest
 
-    - name: Instalar dependências necessárias
+    - name: Instalar dependencias necessarias
       yum:
         name:
           - curl
@@ -45,13 +54,13 @@
         dest: "{{ centos2ol_path }}"
         mode: '0755'
 
-    - name: Executar conversão CentOS -> Oracle Linux
+    - name: Executar conversao CentOS -> Oracle Linux
       command: bash {{ centos2ol_path }}
-      register: centos2ol_result
       args:
         creates: /etc/oracle-release
+      register: centos2ol_result
 
-    - name: Exibir saída do script
+    - name: Exibir saida da conversao
       debug:
         var: centos2ol_result.stdout_lines
 
@@ -62,21 +71,21 @@
         path: /etc/oracle-release
       register: oracle_release
 
-    - name: Falhar se conversão não ocorreu
+    - name: Falhar se conversao nao ocorreu
       fail:
-        msg: "Conversão falhou. /etc/oracle-release não encontrado."
+        msg: "Conversao falhou. /etc/oracle-release nao encontrado."
       when: not oracle_release.stat.exists
 
-    - name: Reiniciar o servidor após conversão
+    - name: Reiniciar o servidor apos conversao
       reboot:
         reboot_timeout: 1800
-        msg: "Reboot após conversão para Oracle Linux 7"
+        msg: "Reboot apos conversao para Oracle Linux 7"
 
-    - name: Verificar versão após reboot
+    - name: Verificar versao do Oracle Linux apos reboot
       command: cat /etc/oracle-release
       register: ol_version
       changed_when: false
 
-    - name: Exibir versão final do sistema
+    - name: Exibir versao final do sistema
       debug:
         msg: "Sistema convertido com sucesso: {{ ol_version.stdout }}"
