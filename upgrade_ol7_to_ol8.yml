@@ -1,0 +1,172 @@
+---
+- name: Upgrade Oracle Linux 7.9 para Oracle Linux 8 usando Leapp
+  hosts: centos7
+  become: true
+  gather_facts: yes
+
+  vars:
+    required_ol_version: "7.9"
+    reboot_timeout: 3600
+    leapp_answerfile: /var/log/leapp/answerfile
+
+  ###########################################################################
+  # PRÉ-CHECKS
+  ###########################################################################
+  pre_tasks:
+    - name: Validar distribuição
+      fail:
+        msg: "Playbook suportado apenas para Oracle Linux"
+      when: ansible_distribution != "OracleLinux"
+
+    - name: Validar versão do Oracle Linux
+      fail:
+        msg: "Oracle Linux deve estar na versão 7.9"
+      when: ansible_distribution_version != required_ol_version
+
+    - name: Garantir SELinux enforcing
+      selinux:
+        policy: targeted
+        state: enforcing
+
+    - name: Garantir firewalld ativo
+      service:
+        name: firewalld
+        state: started
+        enabled: yes
+
+    - name: Validar espaço livre em /
+      assert:
+        that:
+          - ansible_mounts
+            | selectattr('mount','equalto','/')
+            | map(attribute='size_available')
+            | first > 5 * 1024 * 1024 * 1024
+        fail_msg: "Espaço insuficiente em / (mínimo 5GB)"
+
+  ###########################################################################
+  # PREPARAÇÃO DO SISTEMA OL7
+  ###########################################################################
+  tasks:
+    - name: Garantir pacote de release do OL7
+      yum:
+        name: oraclelinux-release-el7
+        state: present
+
+    - name: Habilitar repositórios necessários
+      command: yum-config-manager --enable
+        ol7_latest
+        ol7_optional_latest
+        ol7_addons
+        ol7_UEKR6
+        ol7_leapp
+      changed_when: false
+
+    - name: Atualizar todos os pacotes do OL7
+      yum:
+        name: "*"
+        state: latest
+
+    - name: Reboot após atualização
+      reboot:
+        reboot_timeout: 900
+
+  ###########################################################################
+  # KERNEL UEK
+  ###########################################################################
+    - name: Instalar kernel UEK
+      yum:
+        name: kernel-uek
+        state: present
+
+    - name: Definir UEK como kernel padrão
+      command: grub2-set-default 0
+      changed_when: false
+
+    - name: Reboot para ativar UEK
+      reboot:
+        reboot_timeout: 900
+
+    - name: Validar kernel ativo
+      command: uname -r
+      register: kernel_check
+
+    - name: Exibir kernel ativo
+      debug:
+        msg: "Kernel ativo: {{ kernel_check.stdout }}"
+
+  ###########################################################################
+  # LEAPP
+  ###########################################################################
+    - name: Instalar Leapp e plugin de upgrade
+      yum:
+        name:
+          - leapp
+          - leapp-upgrade-el7toel8
+        state: present
+
+    - name: Executar leapp preupgrade
+      command: leapp preupgrade
+      register: preupgrade
+      failed_when: false
+
+    - name: Exibir saída do preupgrade
+      debug:
+        var: preupgrade.stdout_lines
+
+  ###########################################################################
+  # ANSWERFILE (INHIBITORS CONHECIDOS)
+  ###########################################################################
+    - name: Criar answerfile do Leapp
+      copy:
+        dest: "{{ leapp_answerfile }}"
+        content: |
+          [remove_pam_pkcs11_module_check]
+          confirm = True
+
+          [check_vdo]
+          confirm = True
+
+  ###########################################################################
+  # EXECUÇÃO DO UPGRADE
+  ###########################################################################
+    - name: Executar leapp upgrade
+      command: leapp upgrade
+      register: upgrade
+      failed_when: false
+
+    - name: Exibir saída do upgrade
+      debug:
+        var: upgrade.stdout_lines
+
+  ###########################################################################
+  # BOOT EM ORACLE LINUX 8
+  ###########################################################################
+  post_tasks:
+    - name: Reboot para iniciar Oracle Linux 8
+      reboot:
+        reboot_timeout: "{{ reboot_timeout }}"
+
+    - name: Validar versão do sistema
+      command: cat /etc/os-release
+      register: os_release
+
+    - name: Exibir versão final
+      debug:
+        msg: "{{ os_release.stdout }}"
+
+    - name: Validar kernel final
+      command: uname -r
+      register: kernel_final
+
+    - name: Exibir kernel final
+      debug:
+        msg: "Kernel final: {{ kernel_final.stdout }}"
+
+    - name: Verificar serviços com falha
+      command: systemctl --failed
+      register: failed_services
+      changed_when: false
+
+    - name: Exibir serviços com falha
+      debug:
+        var: failed_services.stdout_lines
