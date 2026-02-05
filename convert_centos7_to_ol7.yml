@@ -1,0 +1,82 @@
+---
+- name: Conversão de CentOS 7 para Oracle Linux 7
+  hosts: centos7
+  become: true
+  gather_facts: yes
+
+  vars:
+    centos2ol_url: https://raw.githubusercontent.com/oracle/centos2ol/main/centos2ol.sh
+    centos2ol_path: /root/centos2ol.sh
+
+  pre_tasks:
+
+    - name: Validar se o sistema é CentOS 7
+      assert:
+        that:
+          - ansible_distribution == "CentOS"
+          - ansible_distribution_major_version == "7"
+        fail_msg: "Este playbook só pode ser executado em CentOS 7"
+        success_msg: "Sistema validado: CentOS 7"
+
+    - name: Garantir que não está rodando em container
+      assert:
+        that:
+          - ansible_virtualization_role != "guest" or ansible_virtualization_type != "docker"
+        fail_msg: "Conversão não suportada em containers"
+
+  tasks:
+
+    - name: Atualizar todos os pacotes do CentOS
+      yum:
+        name: "*"
+        state: latest
+
+    - name: Instalar dependências necessárias
+      yum:
+        name:
+          - curl
+          - bash
+          - yum-utils
+        state: present
+
+    - name: Download do script centos2ol.sh
+      get_url:
+        url: "{{ centos2ol_url }}"
+        dest: "{{ centos2ol_path }}"
+        mode: '0755'
+
+    - name: Executar conversão CentOS -> Oracle Linux
+      command: bash {{ centos2ol_path }}
+      register: centos2ol_result
+      args:
+        creates: /etc/oracle-release
+
+    - name: Exibir saída do script
+      debug:
+        var: centos2ol_result.stdout_lines
+
+  post_tasks:
+
+    - name: Validar se Oracle Linux foi instalado
+      stat:
+        path: /etc/oracle-release
+      register: oracle_release
+
+    - name: Falhar se conversão não ocorreu
+      fail:
+        msg: "Conversão falhou. /etc/oracle-release não encontrado."
+      when: not oracle_release.stat.exists
+
+    - name: Reiniciar o servidor após conversão
+      reboot:
+        reboot_timeout: 1800
+        msg: "Reboot após conversão para Oracle Linux 7"
+
+    - name: Verificar versão após reboot
+      command: cat /etc/oracle-release
+      register: ol_version
+      changed_when: false
+
+    - name: Exibir versão final do sistema
+      debug:
+        msg: "Sistema convertido com sucesso: {{ ol_version.stdout }}"
