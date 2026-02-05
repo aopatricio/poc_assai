@@ -1,5 +1,5 @@
 ---
-- name: Upgrade Oracle Linux 7.9 para Oracle Linux 8 usando Leapp
+- name: Upgrade Oracle Linux 7.9 para Oracle Linux 8 (Leapp)
   hosts: centos7
   become: true
   gather_facts: yes
@@ -8,6 +8,7 @@
     required_ol_version: "7.9"
     reboot_timeout: 3600
     leapp_answerfile: /var/log/leapp/answerfile
+    leapp_repo_file: /etc/leapp/files/leapp_upgrade_repositories.repo
 
   ###########################################################################
   # PRÉ-CHECKS
@@ -15,7 +16,7 @@
   pre_tasks:
     - name: Validar distribuição
       fail:
-        msg: "Playbook suportado apenas para Oracle Linux"
+        msg: "Este playbook é exclusivo para Oracle Linux"
       when: ansible_distribution != "OracleLinux"
 
     - name: Validar versão do Oracle Linux
@@ -44,15 +45,15 @@
         fail_msg: "Espaço insuficiente em / (mínimo 5GB)"
 
   ###########################################################################
-  # PREPARAÇÃO DO SISTEMA OL7
+  # PREPARAÇÃO DO OL7
   ###########################################################################
   tasks:
-    - name: Garantir pacote de release do OL7
+    - name: Garantir pacote release OL7
       yum:
         name: oraclelinux-release-el7
         state: present
 
-    - name: Habilitar repositórios necessários
+    - name: Habilitar repositórios OL7 necessários
       command: yum-config-manager --enable
         ol7_latest
         ol7_optional_latest
@@ -61,7 +62,7 @@
         ol7_leapp
       changed_when: false
 
-    - name: Atualizar todos os pacotes do OL7
+    - name: Atualizar todos os pacotes OL7
       yum:
         name: "*"
         state: latest
@@ -90,14 +91,56 @@
       command: uname -r
       register: kernel_check
 
-    - name: Exibir kernel ativo
-      debug:
+    - debug:
         msg: "Kernel ativo: {{ kernel_check.stdout }}"
+
+  ###########################################################################
+  # CONFIGURAÇÃO OBRIGATÓRIA DO LEAPP (INHIBITORS)
+  ###########################################################################
+    - name: Criar diretório do Leapp
+      file:
+        path: /etc/leapp/files
+        state: directory
+        mode: '0755'
+
+    - name: Criar repositórios OL8 exigidos pelo Leapp
+      copy:
+        dest: "{{ leapp_repo_file }}"
+        content: |
+          [ol8_baseos_latest]
+          name=Oracle Linux 8 BaseOS Latest
+          baseurl=https://yum.oracle.com/repo/OracleLinux/OL8/baseos/latest/$basearch/
+          enabled=1
+          gpgcheck=1
+          gpgkey=https://yum.oracle.com/RPM-GPG-KEY-oracle
+
+          [ol8_appstream]
+          name=Oracle Linux 8 AppStream
+          baseurl=https://yum.oracle.com/repo/OracleLinux/OL8/appstream/$basearch/
+          enabled=1
+          gpgcheck=1
+          gpgkey=https://yum.oracle.com/RPM-GPG-KEY-oracle
+
+    - name: Criar answerfile completo do Leapp
+      copy:
+        dest: "{{ leapp_answerfile }}"
+        content: |
+          [remove_pam_pkcs11_module_check]
+          confirm = True
+
+          [check_vdo]
+          confirm = True
+
+          [python_version_check]
+          confirm = True
+
+          [default_boot_kernel]
+          confirm = True
 
   ###########################################################################
   # LEAPP
   ###########################################################################
-    - name: Instalar Leapp e plugin de upgrade
+    - name: Instalar Leapp
       yum:
         name:
           - leapp
@@ -109,57 +152,37 @@
       register: preupgrade
       failed_when: false
 
-    - name: Exibir saída do preupgrade
-      debug:
+    - debug:
         var: preupgrade.stdout_lines
 
-  ###########################################################################
-  # ANSWERFILE (INHIBITORS CONHECIDOS)
-  ###########################################################################
-    - name: Criar answerfile do Leapp
-      copy:
-        dest: "{{ leapp_answerfile }}"
-        content: |
-          [remove_pam_pkcs11_module_check]
-          confirm = True
-
-          [check_vdo]
-          confirm = True
-
-  ###########################################################################
-  # EXECUÇÃO DO UPGRADE
-  ###########################################################################
     - name: Executar leapp upgrade
       command: leapp upgrade
       register: upgrade
       failed_when: false
 
-    - name: Exibir saída do upgrade
-      debug:
+    - debug:
         var: upgrade.stdout_lines
 
   ###########################################################################
-  # BOOT EM ORACLE LINUX 8
+  # BOOT EM OL8
   ###########################################################################
   post_tasks:
     - name: Reboot para iniciar Oracle Linux 8
       reboot:
         reboot_timeout: "{{ reboot_timeout }}"
 
-    - name: Validar versão do sistema
+    - name: Validar versão final
       command: cat /etc/os-release
       register: os_release
 
-    - name: Exibir versão final
-      debug:
+    - debug:
         msg: "{{ os_release.stdout }}"
 
     - name: Validar kernel final
       command: uname -r
       register: kernel_final
 
-    - name: Exibir kernel final
-      debug:
+    - debug:
         msg: "Kernel final: {{ kernel_final.stdout }}"
 
     - name: Verificar serviços com falha
@@ -167,6 +190,5 @@
       register: failed_services
       changed_when: false
 
-    - name: Exibir serviços com falha
-      debug:
+    - debug:
         var: failed_services.stdout_lines
