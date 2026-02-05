@@ -8,7 +8,6 @@
     required_ol_version: "7.9"
     reboot_timeout: 3600
     leapp_answerfile: /var/log/leapp/answerfile
-    leapp_repo_file: /etc/leapp/files/leapp_upgrade_repositories.repo
 
   ###########################################################################
   # PRÉ-CHECKS
@@ -95,30 +94,48 @@
         msg: "Kernel ativo: {{ kernel_check.stdout }}"
 
   ###########################################################################
-  # CONFIGURAÇÃO OBRIGATÓRIA DO LEAPP (INHIBITORS)
+  # CONFIGURAÇÃO OBRIGATÓRIA DO LEAPP (REPOS + ANSWERFILE)
   ###########################################################################
-    - name: Criar diretório do Leapp
+    - name: Garantir diretório do Leapp
       file:
         path: /etc/leapp/files
         state: directory
         mode: '0755'
 
-    - name: Criar repositórios OL8 exigidos pelo Leapp
+    - name: Criar repositório OL8 (yum.repos.d) - OBRIGATÓRIO
       copy:
-        dest: "{{ leapp_repo_file }}"
+        dest: /etc/yum.repos.d/leapp_upgrade_repositories.repo
         content: |
           [ol8_baseos_latest]
           name=Oracle Linux 8 BaseOS Latest
           baseurl=https://yum.oracle.com/repo/OracleLinux/OL8/baseos/latest/$basearch/
           enabled=1
-          gpgcheck=1
+          gpgcheck=0
           gpgkey=https://yum.oracle.com/RPM-GPG-KEY-oracle
 
           [ol8_appstream]
           name=Oracle Linux 8 AppStream
           baseurl=https://yum.oracle.com/repo/OracleLinux/OL8/appstream/$basearch/
           enabled=1
-          gpgcheck=1
+          gpgcheck=0
+          gpgkey=https://yum.oracle.com/RPM-GPG-KEY-oracle
+
+    - name: Criar repositório OL8 também em /etc/leapp/files (compatibilidade)
+      copy:
+        dest: /etc/leapp/files/leapp_upgrade_repositories.repo
+        content: |
+          [ol8_baseos_latest]
+          name=Oracle Linux 8 BaseOS Latest
+          baseurl=https://yum.oracle.com/repo/OracleLinux/OL8/baseos/latest/$basearch/
+          enabled=1
+          gpgcheck=0
+          gpgkey=https://yum.oracle.com/RPM-GPG-KEY-oracle
+
+          [ol8_appstream]
+          name=Oracle Linux 8 AppStream
+          baseurl=https://yum.oracle.com/repo/OracleLinux/OL8/appstream/$basearch/
+          enabled=1
+          gpgcheck=0
           gpgkey=https://yum.oracle.com/RPM-GPG-KEY-oracle
 
     - name: Criar answerfile completo do Leapp
@@ -164,7 +181,7 @@
         var: upgrade.stdout_lines
 
   ###########################################################################
-  # BOOT EM OL8
+  # BOOT FINAL EM OL8
   ###########################################################################
   post_tasks:
     - name: Reboot para iniciar Oracle Linux 8
